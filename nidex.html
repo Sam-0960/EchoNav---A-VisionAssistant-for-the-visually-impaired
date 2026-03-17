@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VisionAssist — Improved Detection + Audio</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #0f1724;
+      --card: #1c2531;
+      --accent: #00c897;
+      --text: #f2f2f2;
+      --muted: #9aa0a6;
+    }
+    body {
+      margin: 0; font-family: "Poppins", sans-serif;
+      background: var(--bg); color: var(--text);
+      display: flex; justify-content: center; min-height: 100vh; padding: 20px;
+    }
+    main { width: 90%; max-width: 800px; }
+    h1, h2 { text-align: center; color: var(--accent); }
+    section {
+      background: var(--card); padding: 20px; margin-bottom: 20px;
+      border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    }
+    video {
+      width: 100%; border-radius: 10px; background: black; margin-bottom: 10px;
+    }
+    .controls {
+      display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;
+    }
+    .btn {
+      background: var(--accent); border: none; padding: 10px 16px;
+      border-radius: 8px; color: rgb(15, 23, 36); cursor: pointer;
+      font-weight: 600; transition: transform 0.2s ease;
+    }
+    .btn:hover { transform: scale(1.05); }
+    .status {
+      text-align: center; color: var(--muted); margin-top: 8px;
+    }
+    .log {
+      background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;
+      min-height: 120px; max-height: 200px; overflow-y: auto; 
+      white-space: pre-line; 
+    }
+    .footer {
+      text-align: center; font-size: 14px; color: var(--muted); margin-top: 8px;
+    }
+    .light {
+      --bg: #f5f5f5; --card: #ffffff; --text: #111; --muted: #444; --accent: #007aff;
+    }
+    canvas {
+      position: absolute; top: 0; left: 0; z-index: 2; pointer-events: none;
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1>VisionAssist — Improved Detection + Audio</h1>
+
+    <section>
+      <h2>Camera Feed</h2>
+      <div style="position: relative;">
+        <video id="video" autoplay playsinline></video>
+        <canvas id="canvas"></canvas>
+      </div>
+
+      <div class="controls">
+        <button id="startBtn" class="btn">Start Detection</button>
+        <button id="stopBtn" class="btn" disabled>Stop</button>
+        <button id="textBtn" class="btn">Read Text</button>
+        <button id="modeBtn" class="btn">🌙 Toggle Mode</button>
+        <label><input type="checkbox" id="speakToggle" checked /> Speak</label>
+      </div>
+
+      <div class="status" id="status">Idle</div>
+    </section>
+
+    <section>
+      <h2>Detections</h2>
+      <div id="log" class="log">No detections yet.</div>
+    </section>
+
+    <footer class="footer">@VisionAssist | COCO-SSD + Audio + OCR</footer>
+  </main>
+
+  <script>
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const textBtn = document.getElementById("textBtn");
+    const statusEl = document.getElementById("status");
+    const logEl = document.getElementById("log");
+    const speakToggle = document.getElementById("speakToggle");
+    const modeBtn = document.getElementById("modeBtn");
+
+    let model = null, running = false, stream = null;
+    let spokenTimes = {};
+
+    modeBtn.onclick = () => {
+      document.body.classList.toggle("light");
+      modeBtn.textContent = document.body.classList.contains("light") ? "🌙 Dark Mode" : "☀️ Light Mode";
+    };
+
+    function log(msg) {
+      const now = new Date().toLocaleTimeString();
+      logEl.textContent = `[${now}] ${msg}\n` + logEl.textContent;
+    }
+
+    function speak(text) {
+      if (!speakToggle.checked) return;
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 1.0;
+      window.speechSynthesis.speak(u);
+    }
+
+    async function initCamera() {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      video.srcObject = stream;
+      await new Promise(r => (video.onloadedmetadata = r));
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+
+    async function detectLoop() {
+      if (!model || !running) return;
+      const predictions = await model.detect(video);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      let detected = [];
+
+      for (const p of predictions) {
+        if (p.score < 0.3) continue;
+        const [x, y, w, h] = p.bbox;
+        ctx.strokeStyle = "#00FF00";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, w, h);
+        ctx.fillStyle = "#00FF00";
+        ctx.font = "16px Poppins";
+        ctx.fillText(`${p.class}`, x + 5, y + 20);
+
+        const dist = (video.videoHeight / h) * 0.3;
+        const d = dist.toFixed(1);
+        detected.push(`${p.class} (${d}m)`);
+
+        const now = Date.now();
+        if (!spokenTimes[p.class] || (now - spokenTimes[p.class] > 4000)) {
+          speak(`${p.class} detected approximately ${d} meters away`);
+          spokenTimes[p.class] = now;
+        }
+      }
+
+      if (detected.length > 0) {
+        log("Detected: " + detected.join(", "));
+      }
+      if (running) {
+        requestAnimationFrame(detectLoop);
+      }
+    }
+
+    startBtn.onclick = async () => {
+      startBtn.disabled = true;
+      setStatus("Loading model...");
+      model = await cocoSsd.load();
+      setStatus("Starting camera...");
+      await initCamera();
+      running = true;
+      stopBtn.disabled = false;
+      setStatus("Detecting...");
+      detectLoop();
+    };
+
+    stopBtn.onclick = () => {
+      running = false;
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      setStatus("Stopped.");
+    };
+
+    textBtn.onclick = async () => {
+      const txt = logEl.textContent.trim();
+      if (!txt || txt === "No detections yet.") {
+        speak("No detections to read.");
+        return;
+      }
+      speak(txt);
+    };
+
+    function setStatus(msg) {
+      statusEl.textContent = msg;
+    }
+  </script>
+</body>
+</html>
